@@ -1,0 +1,112 @@
+// import geometry (point to zoom in to)
+var home_coords = ee.Geometry.Point([106.55, 29.57])// please fill in correct expression
+// draw a 20 km circle around this point
+var region = home_coords.buffer(20000);
+// load image stack for one year
+var dataset = ee.ImageCollection('NASA/GLDAS/V20/NOAH/G025/T3H')
+  .filterDate('2010-01-01', '2010-12-31')
+  .filterBounds(home_coords);
+
+var cloud_free_composite = ee.Algorithms.Landsat.simpleComposite({
+  collection: dataset,
+  asFloat: true
+})
+
+// extract air temperature, SW radiation for one year
+var AirTemperature = dataset.select('Tair_f_inst');
+var Irradiation_ShortWave = dataset.select('SWdown_f_tavg');
+var WindSpeed = dataset.select('Wind_f_inst');
+
+
+  
+// take composite (yearly mean) of irradiation and air temp and put in different bands of image
+var T_G_comp = ee.Image(AirTemperature.mean())
+    .addBands(ee.Image(Irradiation_ShortWave.mean()));
+
+
+
+//The first way of calculating CF
+var CF = T_G_comp.expression("(1 - beta*(c1 + c2*T + c3*G - Tref) + feta*log10(G + 1))*G/Gref", {
+    beta:0.0045,
+    c1: -3.75,
+    c2: 1.14,
+    c3:0.0175,
+    Tref: 25,
+    feta: 0.1,
+    Gref:1000,
+    G: T_G_comp.select('SWdown_f_tavg'),
+    T: T_G_comp.select('Tair_f_inst').subtract(ee.Image(273.15))
+}).rename("CF");
+
+// take composite (yearly mean) of irradiation and air temp and put in different bands of image
+
+var T = T_G_comp.expression("T",{
+      T: T_G_comp.select('Tair_f_inst')
+}).rename("T")
+
+var G = T_G_comp.expression("G",{
+   G: T_G_comp.select('SWdown_f_tavg')
+}).rename("G")
+
+T_G_comp.addBands(CF)
+
+Map.addLayer(T.select('T').clip(region), {bands: "T", min:0, max:60} , "T")
+Map.addLayer(G.select('G').clip(region), {bands: "G", min:0, max:1000} , "G")
+Map.addLayer(CF.select('CF').clip(region), {bands:"CF", min:0.15, max:0.35}, "CF")
+
+//The second way of calculating CF based on 3-hourly data
+var CF2 = function(image) {
+  return image.expression(
+    '(1 - beta*(c1 + c2*T + c3*G - Tref) + feta*log10(G + 1))*G/Gref',
+    {
+     'beta':0.0045,
+     'c1': -3.75,
+     'c2': 1.14,
+     'c3':0.0175,
+     'Tref': 25,
+     'feta': 0.1,
+     'Gref':1000,
+     'G': image.select('SWdown_f_tavg'),
+     'T': image.select('Tair_f_inst').subtract(ee.Image(273.15))
+    }).set('system:time_start', image.get('system:time_start')).rename("CF2");
+};
+
+Map.addLayer(dataset.map(CF2).mean(), {bands:"CF2",min:0.15, max:0.35}, "CF2")
+
+
+// print graphs
+print(ui.Chart.image.doySeries(Irradiation_ShortWave, home_coords, ee.Reducer.mean(), 30));
+print(ui.Chart.image.doySeries(WindSpeed, home_coords, ee.Reducer.mean(), 30));
+
+
+// add a chart of CF2 to the map
+// define CF2_graph as time series
+var CF2_graph = dataset.map(CF2);
+// Create an image time series chart.
+var chart = ui.Chart.image.series({
+  imageCollection: CF2_graph,
+  region: home_coords,
+  reducer: ee.Reducer.mean(),
+  scale: 200
+});
+Map.add(chart);
+//Q3.5:
+//I choose to analyze the capacity factor of Chongqing, a megacity (31mil people) in China.
+//The first CF and the second CF are computed in different ways:
+//The first one is computed on the basis of the yearly average of the temperature in Chongqing 
+//whereas the second one is computed based on the 3-hourly data of the temperature and the shortwave 
+//irradiation. Therefore, the first one shows the overall capacity for a solar panel to produce solar 
+//energy on a yearly basis whereas the second one evaluates the peak time and the low-tide time when a 
+//solar panel produces solar energy for electricity in Chongqing.
+//Based on the time series of the CF chart, it is shown that most of the time in 2010, the capacity factor is at least
+//below 0.6 and the peak time is between late June and August. On the other hand, the low tide time is in
+//October, December. In my opinion, the CF is mostly low due to Chongqing's topography. Chongqing is a mountain city and the mountains
+//can capture the precipitation and get it trapped, which leads to very clouded skies. The clouds can
+//reflect the shortwave back and that makes the yearly average temperature and the yearly average shortwave irradiation
+//fairly low. Besides, the mountains can keep the smog trapped in the city and that makes the solar radiation even more difficult
+//to reach the city. The smog mainly comes from burning of coal for electricity according to Patel (n.d.). The burning of coal
+//happens a lot more in wintertimes (Patel, n.d.). Because the smog has a blocking effect on the sunlight plus the fact that the clouds can do the 
+//same, the CF looks extremely low in the chart. Therefore, unless a source other than solar energy can replace 
+//the coal burning for electricity, for investors, solar energy is not worth investing in Chongqing. 
+//Reference: Patel, K. (n.d.). Smog Smothers Solar Energy in China. NASA Earth Observatory. 
+//https://earthobservatory.nasa.gov/images/92054/smog-smothers-solar-energy-in-china
